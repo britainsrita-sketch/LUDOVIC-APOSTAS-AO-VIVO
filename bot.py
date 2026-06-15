@@ -1,14 +1,20 @@
 # bot.py
 import os
+import json
 import random
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, ConversationHandler, CallbackContext
+import time
+from threading import Thread
+import requests
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s', level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-SELECTING, PLAY_AGAIN = range(2)
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("Missing TELEGRAM_BOT_TOKEN")
+
+URL = f"https://api.telegram.org/bot{TOKEN}"
 
 QUESTIONS = [
     {"nick": "Galo", "correct": "Atlético Mineiro", "wrong": ["Cruzeiro", "América-MG", "Grêmio"]},
@@ -21,147 +27,166 @@ QUESTIONS = [
     {"nick": "Tricolor Paulista", "correct": "São Paulo", "wrong": ["Fluminense", "Grêmio", "Bahia"]},
     {"nick": "Furacão", "correct": "Athletico Paranaense", "wrong": ["Coritiba", "Paraná", "Internacional"]},
     {"nick": "Raposa", "correct": "Cruzeiro", "wrong": ["Atlético-MG", "América-MG", "Grêmio"]},
-    {"nick": "Gigante da Colina", "correct": "Vasco", "wrong": ["Flamengo", "Fluminense", "Botafogo"]},
 ]
 
 user_scores = {}
+user_state = {}
+user_current_q = {}
+user_options = {}
 
-def format_question(q):
-    return f"⚽ Which club is called *{q['nick']}*?"
+def send_message(chat_id, text, reply_markup=None):
+    payload = {"chat_id": chat_id, "text": text, "parse_mode": "Markdown"}
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
+    try:
+        requests.post(f"{URL}/sendMessage", json=payload, timeout=5)
+    except Exception as e:
+        logger.error(f"Send error: {e}")
 
-def start(update: Update, context: CallbackContext):
-    user_id = update.effective_user.id
-    user_scores[user_id] = 0
-    
-    update.message.reply_text(
-        "⚽ *LUDOVIC APOSTAS AO VIVO* ⚽\n\n"
-        "Responda qual time corresponde ao apelido.\n"
-        "Cada acerto = 1 ponto.\n\n"
-        "Digite *Sim* para jogar ou *Não* para sair.",
-        parse_mode="Markdown"
-    )
-    return SELECTING
-
-def handle_start_choice(update: Update, context: CallbackContext):
-    text = update.message.text.strip().lower()
-    
-    if text == "sim":
-        return ask_question(update, context)
-    elif text == "não":
-        update.message.reply_text("Ok! /start quando quiser jogar.")
-        return ConversationHandler.END
-    else:
-        update.message.reply_text('Responda apenas "Sim" ou "Não".')
-        return SELECTING
-
-def ask_question(update: Update, context: CallbackContext):
+def send_question(chat_id):
     q = random.choice(QUESTIONS)
-    context.user_data["current_q"] = q
+    user_current_q[chat_id] = q
     
     options = [q["correct"]] + q["wrong"]
     random.shuffle(options)
-    context.user_data["options"] = options
+    user_options[chat_id] = options
     
-    keyboard = [
-        [InlineKeyboardButton(f"A) {options[0]}", callback_data="0")],
-        [InlineKeyboardButton(f"B) {options[1]}", callback_data="1")],
-        [InlineKeyboardButton(f"C) {options[2]}", callback_data="2")],
-        [InlineKeyboardButton(f"D) {options[3]}", callback_data="3")],
-    ]
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": f"A) {options[0]}", "callback_data": "0"}],
+            [{"text": f"B) {options[1]}", "callback_data": "1"}],
+            [{"text": f"C) {options[2]}", "callback_data": "2"}],
+            [{"text": f"D) {options[3]}", "callback_data": "3"}],
+        ]
+    }
     
-    update.message.reply_text(
-        format_question(q),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    return SELECTING
+    send_message(chat_id, f"⚽ Which club is called *{q['nick']}*?", keyboard)
 
-def answer_callback(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
+def handle_start(chat_id):
+    user_scores[chat_id] = 0
+    user_state[chat_id] = "awaiting_sim"
+    send_message(chat_id, 
+        "⚽ *LUDOVIC APOSTAS AO VIVO* ⚽\n\n"
+        "Responda qual time corresponde ao apelido.\n"
+        "Cada acerto = 1 ponto.\n\n"
+        "Digite *Sim* para jogar ou *Não* para sair.")
+
+def handle_text(chat_id, text):
+    state = user_state.get(chat_id, "idle")
+    text_lower = text.strip().lower()
     
-    user_id = query.from_user.id
-    idx = int(query.data)
+    if state == "awaiting_sim":
+        if text_lower == "sim":
+            user_state[chat_id] = "answering"
+            send_question(chat_id)
+        elif text_lower == "não":
+            send_message(chat_id, "Ok! /start quando quiser jogar.")
+            user_state[chat_id] = "idle"
+        else:
+            send_message(chat_id, 'Responda apenas "Sim" ou "Não".')
+    else:
+        send_message(chat_id, 'Use /start para começar ou /cancel para sair.')
+
+def handle_callback(chat_id, callback_data, message_id):
+    if user_state.get(chat_id) != "answering":
+        return
     
-    q = context.user_data.get("current_q")
-    options = context.user_data.get("options")
+    idx = int(callback_data)
+    q = user_current_q.get(chat_id)
+    options = user_options.get(chat_id)
     
     if not q or not options:
-        query.edit_message_text("Erro. Use /start")
-        return ConversationHandler.END
+        send_message(chat_id, "Erro. Use /start")
+        return
     
     selected = options[idx]
     correct = (selected == q["correct"])
     
     if correct:
-        user_scores[user_id] += 1
-        msg = f"✅ Correto! {q['nick']} é {q['correct']}.\n🏆 Pontos: {user_scores[user_id]}"
+        user_scores[chat_id] = user_scores.get(chat_id, 0) + 1
+        msg = f"✅ Correto! {q['nick']} é {q['correct']}.\n🏆 Pontos: {user_scores[chat_id]}"
     else:
-        msg = f"❌ Errado! {q['nick']} é {q['correct']}, não {selected}.\n📊 Pontos: {user_scores[user_id]}"
+        msg = f"❌ Errado! {q['nick']} é {q['correct']}, não {selected}.\n📊 Pontos: {user_scores.get(chat_id, 0)}"
     
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Sim", callback_data="again_yes")],
-        [InlineKeyboardButton("Não", callback_data="again_no")]
-    ])
+    keyboard = {
+        "inline_keyboard": [
+            [{"text": "✅ Sim", "callback_data": "again_yes"}],
+            [{"text": "❌ Não", "callback_data": "again_no"}]
+        ]
+    }
     
-    query.edit_message_text(f"{msg}\n\nJogar novamente?", reply_markup=keyboard)
-    return PLAY_AGAIN
+    # Edit the original message
+    payload = {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "text": f"{msg}\n\nJogar novamente?",
+        "parse_mode": "Markdown",
+        "reply_markup": json.dumps(keyboard)
+    }
+    requests.post(f"{URL}/editMessageText", json=payload, timeout=5)
+    user_state[chat_id] = "awaiting_again"
 
-def play_again_callback(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-    user_id = query.from_user.id
-    
-    if query.data == "again_yes":
-        q = random.choice(QUESTIONS)
-        context.user_data["current_q"] = q
-        
-        options = [q["correct"]] + q["wrong"]
-        random.shuffle(options)
-        context.user_data["options"] = options
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"A) {options[0]}", callback_data="0")],
-            [InlineKeyboardButton(f"B) {options[1]}", callback_data="1")],
-            [InlineKeyboardButton(f"C) {options[2]}", callback_data="2")],
-            [InlineKeyboardButton(f"D) {options[3]}", callback_data="3")],
-        ])
-        
-        query.edit_message_text(format_question(q), parse_mode="Markdown", reply_markup=keyboard)
-        return SELECTING
+def handle_again(chat_id, callback_data, message_id):
+    if callback_data == "again_yes":
+        user_state[chat_id] = "answering"
+        send_question(chat_id)
+        # Delete the old message with the buttons
+        requests.post(f"{URL}/deleteMessage", json={"chat_id": chat_id, "message_id": message_id}, timeout=5)
     else:
-        score = user_scores.get(user_id, 0)
-        query.edit_message_text(f"🏁 Fim! Pontuação final: {score}\n/start para novo jogo.")
-        return ConversationHandler.END
+        score = user_scores.get(chat_id, 0)
+        send_message(chat_id, f"🏁 Fim! Pontuação final: {score}\n/start para novo jogo.")
+        user_state[chat_id] = "idle"
+        requests.post(f"{URL}/deleteMessage", json={"chat_id": chat_id, "message_id": message_id}, timeout=5)
 
-def cancel(update: Update, context: CallbackContext):
-    update.message.reply_text("Cancelado. /start para jogar.")
-    return ConversationHandler.END
+def handle_cancel(chat_id):
+    send_message(chat_id, "Cancelado. /start para jogar.")
+    user_state[chat_id] = "idle"
 
-def main():
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise ValueError("Missing TELEGRAM_BOT_TOKEN")
-    
-    updater = Updater(token, use_context=True)
-    dp = updater.dispatcher
-    
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            SELECTING: [
-                MessageHandler(Filters.text & ~Filters.command, handle_start_choice),
-                CallbackQueryHandler(answer_callback)
-            ],
-            PLAY_AGAIN: [CallbackQueryHandler(play_again_callback)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    
-    dp.add_handler(conv_handler)
-    
-    updater.start_polling()
-    updater.idle()
+def poll():
+    offset = 0
+    while True:
+        try:
+            response = requests.get(f"{URL}/getUpdates", params={"offset": offset, "timeout": 30}, timeout=35)
+            if response.status_code != 200:
+                time.sleep(1)
+                continue
+                
+            data = response.json()
+            if not data.get("ok"):
+                time.sleep(1)
+                continue
+                
+            for update in data.get("result", []):
+                offset = update["update_id"] + 1
+                
+                if "message" in update:
+                    chat_id = update["message"]["chat"]["id"]
+                    if "text" in update["message"]:
+                        text = update["message"]["text"]
+                        if text == "/start":
+                            handle_start(chat_id)
+                        elif text == "/cancel":
+                            handle_cancel(chat_id)
+                        else:
+                            handle_text(chat_id, text)
+                
+                elif "callback_query" in update:
+                    chat_id = update["callback_query"]["from"]["id"]
+                    callback_data = update["callback_query"]["data"]
+                    message_id = update["callback_query"]["message"]["message_id"]
+                    
+                    if callback_data in ["0", "1", "2", "3"]:
+                        handle_callback(chat_id, callback_data, message_id)
+                    elif callback_data in ["again_yes", "again_no"]:
+                        handle_again(chat_id, callback_data, message_id)
+                    
+                    # Answer callback query
+                    requests.post(f"{URL}/answerCallbackQuery", json={"callback_query_id": update["callback_query"]["id"]}, timeout=5)
+                    
+        except Exception as e:
+            logger.error(f"Poll error: {e}")
+            time.sleep(2)
 
 if __name__ == "__main__":
-    main()
+    logger.info("Bot started with requests method")
+    poll()
