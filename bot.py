@@ -3,7 +3,7 @@ import os
 import random
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler, ContextTypes
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, ConversationHandler, CallbackContext
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,11 +29,11 @@ user_scores = {}
 def format_question(q):
     return f"⚽ Which club is called *{q['nick']}*?"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     user_scores[user_id] = 0
     
-    await update.message.reply_text(
+    update.message.reply_text(
         "⚽ *LUDOVIC APOSTAS AO VIVO* ⚽\n\n"
         "Responda qual time corresponde ao apelido.\n"
         "Cada acerto = 1 ponto.\n\n"
@@ -42,19 +42,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     )
     return SELECTING
 
-async def handle_start_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def handle_start_choice(update: Update, context: CallbackContext):
     text = update.message.text.strip().lower()
     
     if text == "sim":
-        return await ask_question(update, context)
+        return ask_question(update, context)
     elif text == "não":
-        await update.message.reply_text("Ok! /start quando quiser jogar.")
+        update.message.reply_text("Ok! /start quando quiser jogar.")
         return ConversationHandler.END
     else:
-        await update.message.reply_text('Responda apenas "Sim" ou "Não".')
+        update.message.reply_text('Responda apenas "Sim" ou "Não".')
         return SELECTING
 
-async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def ask_question(update: Update, context: CallbackContext):
     q = random.choice(QUESTIONS)
     context.user_data["current_q"] = q
     
@@ -69,16 +69,16 @@ async def ask_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         [InlineKeyboardButton(f"D) {options[3]}", callback_data="3")],
     ]
     
-    await update.message.reply_text(
+    update.message.reply_text(
         format_question(q),
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
     return SELECTING
 
-async def answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def answer_callback(update: Update, context: CallbackContext):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     
     user_id = query.from_user.id
     idx = int(query.data)
@@ -87,7 +87,7 @@ async def answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     options = context.user_data.get("options")
     
     if not q or not options:
-        await query.edit_message_text("Erro. Use /start")
+        query.edit_message_text("Erro. Use /start")
         return ConversationHandler.END
     
     selected = options[idx]
@@ -104,12 +104,12 @@ async def answer_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         [InlineKeyboardButton("Não", callback_data="again_no")]
     ])
     
-    await query.edit_message_text(f"{msg}\n\nJogar novamente?", reply_markup=keyboard)
+    query.edit_message_text(f"{msg}\n\nJogar novamente?", reply_markup=keyboard)
     return PLAY_AGAIN
 
-async def play_again_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+def play_again_callback(update: Update, context: CallbackContext):
     query = update.callback_query
-    await query.answer()
+    query.answer()
     user_id = query.from_user.id
     
     if query.data == "again_yes":
@@ -127,15 +127,15 @@ async def play_again_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
             [InlineKeyboardButton(f"D) {options[3]}", callback_data="3")],
         ])
         
-        await query.edit_message_text(format_question(q), parse_mode="Markdown", reply_markup=keyboard)
+        query.edit_message_text(format_question(q), parse_mode="Markdown", reply_markup=keyboard)
         return SELECTING
     else:
         score = user_scores.get(user_id, 0)
-        await query.edit_message_text(f"🏁 Fim! Pontuação final: {score}\n/start para novo jogo.")
+        query.edit_message_text(f"🏁 Fim! Pontuação final: {score}\n/start para novo jogo.")
         return ConversationHandler.END
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Cancelado. /start para jogar.")
+def cancel(update: Update, context: CallbackContext):
+    update.message.reply_text("Cancelado. /start para jogar.")
     return ConversationHandler.END
 
 def main():
@@ -143,14 +143,14 @@ def main():
     if not token:
         raise ValueError("Missing TELEGRAM_BOT_TOKEN")
     
-    # Fixed: Use Application.builder() correctly
-    application = Application.builder().token(token).build()
+    updater = Updater(token, use_context=True)
+    dp = updater.dispatcher
     
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             SELECTING: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_start_choice),
+                MessageHandler(Filters.text & ~Filters.command, handle_start_choice),
                 CallbackQueryHandler(answer_callback)
             ],
             PLAY_AGAIN: [CallbackQueryHandler(play_again_callback)],
@@ -158,10 +158,10 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     
-    application.add_handler(conv_handler)
+    dp.add_handler(conv_handler)
     
-    # Start the bot
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
