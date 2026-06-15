@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 SELECTING, PLAY_AGAIN = range(2)
 
-# Questions in the format "Which club is called [nickname]?"
 QUESTIONS = [
     {"nick": "Galo", "correct": "Atlético Mineiro", "wrong": ["Cruzeiro", "América-MG", "Grêmio"]},
     {"nick": "Falcão do Pici", "correct": "Fortaleza", "wrong": ["Ceará", "Ferroviário", "Sport"]},
@@ -23,11 +22,6 @@ QUESTIONS = [
     {"nick": "Furacão", "correct": "Athletico Paranaense", "wrong": ["Coritiba", "Paraná", "Internacional"]},
     {"nick": "Raposa", "correct": "Cruzeiro", "wrong": ["Atlético-MG", "América-MG", "Grêmio"]},
     {"nick": "Gigante da Colina", "correct": "Vasco", "wrong": ["Flamengo", "Fluminense", "Botafogo"]},
-    {"nick": "Estrela Solitária", "correct": "Botafogo", "wrong": ["Flamengo", "Vasco", "Fluminense"]},
-    {"nick": "Papão", "correct": "Paysandu", "wrong": ["Remo", "Tuna Luso", "Águia"]},
-    {"nick": "Leão do Norte", "correct": "Remo", "wrong": ["Paysandu", "Águia", "Náutico"]},
-    {"nick": "Colorado", "correct": "Internacional", "wrong": ["Grêmio", "Juventude", "Caxias"]},
-    {"nick": "Tricolor Gaúcho", "correct": "Grêmio", "wrong": ["Internacional", "Juventude", "São Paulo"]},
 ]
 
 user_scores = {}
@@ -149,9 +143,10 @@ def main():
     if not token:
         raise ValueError("Missing TELEGRAM_BOT_TOKEN")
     
-    app = Application.builder().token(token).build()
+    # Fixed: Use Application.builder() correctly
+    application = Application.builder().token(token).build()
     
-    conv = ConversationHandler(
+    conv_handler = ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             SELECTING: [
@@ -163,8 +158,10 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     
-    app.add_handler(conv)
-    app.run_polling()
+    application.add_handler(conv_handler)
+    
+    # Start the bot
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
